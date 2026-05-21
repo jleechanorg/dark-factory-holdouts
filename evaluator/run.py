@@ -3,62 +3,103 @@
 Run blind against an implementation tree. Emits per-scenario verdicts and a
 final aggregate JSON line consumed by the dark-factory engine.
 
-Only the scenario name + verdict (PASS/FAIL) leaks to the implementing agent —
-never the scenario body.
+Only the scenario name + verdict (pass/fail) and a redacted bucket label leak
+to the implementing agent — never the scenario body, expected value, or
+actual return value.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib
-import inspect
 import json
+import os
 import pathlib
+import subprocess
 import sys
-import traceback
 
 import yaml
 
+_CALL_RUNNER = pathlib.Path(__file__).parent / "_call_runner.py"
+_SUBPROCESS_TIMEOUT_SECONDS = 30
+
+# Buckets surfaced as `detail`. Never include real values, arities, or paths.
+_BUCKET_OK = "ok"
+_BUCKET_VALUE_MISMATCH = "value_mismatch"
+_BUCKET_ARITY_MISMATCH = "arity_mismatch"
+_BUCKET_EXCEPTION = "exception"
+_BUCKET_TIMEOUT = "timeout"
+_BUCKET_MISSING_MODULE = "missing_module"
+_BUCKET_MISSING_FUNCTION = "missing_function"
+_BUCKET_UNKNOWN_KIND = "unknown_kind"
+
+
+def _sanitized_env() -> dict:
+    """Strip holdout-leaking env vars before exec'ing the impl subprocess."""
+    env = {}
+    for k, v in os.environ.items():
+        if k == "DARK_FACTORY_HOLDOUTS":
+            continue
+        if "HOLDOUT" in k.upper():
+            continue
+        env[k] = v
+    return env
+
+
+def _run_subprocess(spec_payload: dict, impl_root: pathlib.Path) -> dict:
+    """Invoke the call runner. Returns parsed JSON or a bucket-error dict."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(_CALL_RUNNER)],
+            input=json.dumps(spec_payload),
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+            cwd=str(impl_root),
+            env=_sanitized_env(),
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": _BUCKET_TIMEOUT}
+    except Exception:
+        return {"ok": False, "error": _BUCKET_EXCEPTION}
+
+    out = (proc.stdout or "").strip()
+    if not out:
+        return {"ok": False, "error": _BUCKET_EXCEPTION}
+    try:
+        return json.loads(out)
+    except Exception:
+        return {"ok": False, "error": _BUCKET_EXCEPTION}
+
 
 def _python_call(spec: dict, impl_root: pathlib.Path) -> tuple[bool, str]:
-    sys.path.insert(0, str(impl_root))
-    mod_name = spec["module"]
-    func_name = spec["function"]
-    args = spec.get("args", [])
-    kwargs = spec.get("kwargs", {})
-    expected = spec["expect_return"]
-    try:
-        # Force a fresh import so reruns reflect on-disk changes.
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
-        mod = importlib.import_module(mod_name)
-        fn = getattr(mod, func_name)
-        got = fn(*args, **kwargs)
-    except Exception:
-        return False, "exception: " + traceback.format_exc().splitlines()[-1]
-    finally:
-        sys.path.pop(0)
-    if got == expected:
-        return True, "ok"
-    return False, f"got {got!r} expected {expected!r}"
+    payload = {
+        "kind": "python_call",
+        "module": spec["module"],
+        "function": spec["function"],
+        "args": spec.get("args", []) or [],
+        "kwargs": spec.get("kwargs", {}) or {},
+    }
+    result = _run_subprocess(payload, impl_root)
+    if not result.get("ok"):
+        return False, result.get("error") or _BUCKET_EXCEPTION
+    expected_repr = repr(spec["expect_return"])
+    if result.get("value") == expected_repr:
+        return True, _BUCKET_OK
+    return False, _BUCKET_VALUE_MISMATCH
 
 
 def _python_call_signature(spec: dict, impl_root: pathlib.Path) -> tuple[bool, str]:
-    sys.path.insert(0, str(impl_root))
-    try:
-        if spec["module"] in sys.modules:
-            del sys.modules[spec["module"]]
-        mod = importlib.import_module(spec["module"])
-        fn = getattr(mod, spec["function"])
-        sig = inspect.signature(fn)
-        arity = len(sig.parameters)
-        if arity == spec["expect_arity"]:
-            return True, "ok"
-        return False, f"arity {arity} expected {spec['expect_arity']}"
-    except Exception:
-        return False, "exception: " + traceback.format_exc().splitlines()[-1]
-    finally:
-        sys.path.pop(0)
+    payload = {
+        "kind": "python_call_signature",
+        "module": spec["module"],
+        "function": spec["function"],
+    }
+    result = _run_subprocess(payload, impl_root)
+    if not result.get("ok"):
+        return False, result.get("error") or _BUCKET_EXCEPTION
+    if result.get("arity") == spec["expect_arity"]:
+        return True, _BUCKET_OK
+    return False, _BUCKET_ARITY_MISMATCH
 
 
 EVALUATORS = {
@@ -70,7 +111,8 @@ EVALUATORS = {
 def evaluate(feature: str, impl_root: pathlib.Path) -> dict:
     scenarios_path = pathlib.Path(__file__).parent.parent / "holdouts" / feature / "scenarios.yaml"
     if not scenarios_path.exists():
-        return {"verdict": "fail", "error": f"no scenarios at {scenarios_path}", "scenarios": []}
+        # Do not echo the path back to the engine — keep the leak surface narrow.
+        return {"verdict": "fail", "feature": feature, "scenarios": []}
 
     data = yaml.safe_load(scenarios_path.read_text())
     results = []
@@ -79,7 +121,7 @@ def evaluate(feature: str, impl_root: pathlib.Path) -> dict:
         kind = sc["eval"]["kind"]
         evaluator = EVALUATORS.get(kind)
         if not evaluator:
-            results.append({"name": sc["name"], "status": "fail", "detail": f"unknown eval kind {kind!r}"})
+            results.append({"name": sc["name"], "status": "fail", "detail": _BUCKET_UNKNOWN_KIND})
             all_pass = False
             continue
         ok, detail = evaluator(sc["eval"], impl_root)
