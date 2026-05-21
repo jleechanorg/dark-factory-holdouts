@@ -1,0 +1,16 @@
+feature: hello
+scenarios:
+  - name: hello_returns_world_string
+    eval:
+      kind: python_call
+      module: impl.greet
+      function: hello
+      args: []
+      kwargs: {}
+      expect_return: "Hello, world!"
+  - name: hello_takes_no_arguments
+    eval:
+      kind: python_call_signature
+      module: impl.greet
+      function: hello
+      expect_arity: 0
