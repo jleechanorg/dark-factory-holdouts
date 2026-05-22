@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
@@ -31,6 +32,15 @@ _BUCKET_TIMEOUT = "timeout"
 _BUCKET_MISSING_MODULE = "missing_module"
 _BUCKET_MISSING_FUNCTION = "missing_function"
 _BUCKET_UNKNOWN_KIND = "unknown_kind"
+_BUCKET_INVALID_SCHEMA = "invalid_schema"
+
+
+def _invalid_schema(feature: str, name: str = "schema") -> dict:
+    return {
+        "verdict": "fail",
+        "feature": feature,
+        "scenarios": [{"name": name, "status": "fail", "detail": _BUCKET_INVALID_SCHEMA}],
+    }
 
 
 def _sanitized_env() -> dict:
@@ -45,11 +55,31 @@ def _sanitized_env() -> dict:
     return env
 
 
+def _sandbox_command(impl_root: pathlib.Path) -> list[str] | None:
+    sandbox_exec = shutil.which("sandbox-exec")
+    if sandbox_exec is None:
+        return None
+    holdouts_root = str((pathlib.Path(__file__).parent.parent / "holdouts").resolve())
+    holdouts_root = holdouts_root.replace("\\", "\\\\").replace('"', '\\"')
+    writable_root = str(impl_root.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+    profile = f"""
+(version 1)
+(allow default)
+(deny file-read* (subpath "{holdouts_root}"))
+(deny file-write* (subpath "{holdouts_root}"))
+(deny file-write* (require-not (subpath "{writable_root}")))
+"""
+    return [sandbox_exec, "-p", profile]
+
+
 def _run_subprocess(spec_payload: dict, impl_root: pathlib.Path) -> dict:
     """Invoke the call runner. Returns parsed JSON or a bucket-error dict."""
+    sandbox_prefix = _sandbox_command(impl_root)
+    if sandbox_prefix is None:
+        return {"ok": False, "error": _BUCKET_EXCEPTION}
     try:
         proc = subprocess.run(
-            [sys.executable, str(_CALL_RUNNER)],
+            sandbox_prefix + [sys.executable, str(_CALL_RUNNER)],
             input=json.dumps(spec_payload),
             capture_output=True,
             text=True,
@@ -61,6 +91,8 @@ def _run_subprocess(spec_payload: dict, impl_root: pathlib.Path) -> dict:
         return {"ok": False, "error": _BUCKET_TIMEOUT}
     except Exception:
         return {"ok": False, "error": _BUCKET_EXCEPTION}
+    finally:
+        _remove_holdout_handles(impl_root)
 
     out = (proc.stdout or "").strip()
     if not out:
@@ -69,6 +101,38 @@ def _run_subprocess(spec_payload: dict, impl_root: pathlib.Path) -> dict:
         return json.loads(out)
     except Exception:
         return {"ok": False, "error": _BUCKET_EXCEPTION}
+
+
+def _remove_holdout_handles(impl_root: pathlib.Path) -> None:
+    holdouts_root = (pathlib.Path(__file__).parent.parent / "holdouts").resolve()
+    holdout_ids = set()
+    for path in holdouts_root.rglob("*"):
+        try:
+            if path.is_file():
+                st = path.stat()
+                holdout_ids.add((st.st_dev, st.st_ino))
+        except OSError:
+            continue
+
+    try:
+        paths = list(impl_root.rglob("*"))
+    except OSError:
+        return
+    for path in paths:
+        try:
+            if path.is_symlink():
+                try:
+                    path.resolve(strict=True).relative_to(holdouts_root)
+                except (FileNotFoundError, ValueError):
+                    continue
+                path.unlink()
+                continue
+            if path.is_file():
+                st = path.stat()
+                if (st.st_dev, st.st_ino) in holdout_ids:
+                    path.unlink()
+        except OSError:
+            continue
 
 
 def _python_call(spec: dict, impl_root: pathlib.Path) -> tuple[bool, str]:
@@ -114,18 +178,53 @@ def evaluate(feature: str, impl_root: pathlib.Path) -> dict:
         # Do not echo the path back to the engine — keep the leak surface narrow.
         return {"verdict": "fail", "feature": feature, "scenarios": []}
 
-    data = yaml.safe_load(scenarios_path.read_text())
+    try:
+        data = yaml.safe_load(scenarios_path.read_text())
+    except yaml.YAMLError:
+        return _invalid_schema(feature)
+    scenarios = data.get("scenarios") if isinstance(data, dict) else None
+    if not isinstance(scenarios, list) or not scenarios:
+        return _invalid_schema(feature)
     results = []
     all_pass = True
-    for sc in data.get("scenarios", []):
-        kind = sc["eval"]["kind"]
-        evaluator = EVALUATORS.get(kind)
-        if not evaluator:
-            results.append({"name": sc["name"], "status": "fail", "detail": _BUCKET_UNKNOWN_KIND})
+    for sc in scenarios:
+        if not isinstance(sc, dict):
+            results.append({"name": "schema", "status": "fail", "detail": _BUCKET_INVALID_SCHEMA})
             all_pass = False
             continue
-        ok, detail = evaluator(sc["eval"], impl_root)
-        results.append({"name": sc["name"], "status": "pass" if ok else "fail", "detail": detail})
+        name = str(sc.get("name") or "schema")
+        eval_spec = sc.get("eval")
+        if not isinstance(eval_spec, dict):
+            results.append(
+                {
+                    "name": name,
+                    "status": "fail",
+                    "detail": _BUCKET_INVALID_SCHEMA,
+                }
+            )
+            all_pass = False
+            continue
+        kind = eval_spec.get("kind")
+        if not isinstance(kind, str):
+            results.append(
+                {
+                    "name": name,
+                    "status": "fail",
+                    "detail": _BUCKET_INVALID_SCHEMA,
+                }
+            )
+            all_pass = False
+            continue
+        evaluator = EVALUATORS.get(kind)
+        if not evaluator:
+            results.append({"name": name, "status": "fail", "detail": _BUCKET_UNKNOWN_KIND})
+            all_pass = False
+            continue
+        try:
+            ok, detail = evaluator(eval_spec, impl_root)
+        except (KeyError, TypeError):
+            ok, detail = False, _BUCKET_INVALID_SCHEMA
+        results.append({"name": name, "status": "pass" if ok else "fail", "detail": detail})
         if not ok:
             all_pass = False
 
