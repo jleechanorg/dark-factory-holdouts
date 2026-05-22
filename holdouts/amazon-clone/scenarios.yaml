@@ -1,0 +1,91 @@
+feature: amazon-clone
+scenarios:
+  - name: product_listing_loads
+    eval:
+      kind: python_call
+      module: holdout_amazon.playwright_test
+      function: test_product_listing_loads
+      args: []
+      kwargs: {}
+      expect_return: '{"status": "pass", "products": true}'
+
+  - name: search_filters_products
+    eval:
+      kind: python_call
+      module: holdout_amazon.playwright_test
+      function: test_search_filters_products
+      args: []
+      kwargs: {}
+      expect_return: '{"status": "pass"}'
+
+  - name: detail_page_has_price_title_description
+    eval:
+      kind: python_call
+      module: holdout_amazon.playwright_test
+      function: test_detail_page_fields
+      args: []
+      kwargs: {}
+      expect_return: '{"status": "pass", "has_title": true, "has_price": true, "has_description": true}'
+
+  - name: cart_add_remove_quantity
+    eval:
+      kind: python_call
+      module: holdout_amazon.playwright_test
+      function: test_cart_operations
+      args: []
+      kwargs: {}
+      expect_return: '{"status": "pass"}'
+
+  - name: checkout_rejects_invalid_email
+    eval:
+      kind: python_call
+      module: holdout_amazon.playwright_test
+      function: test_checkout_invalid_email
+      args: []
+      kwargs: {}
+      expect_return: '{"status": "pass", "validation_works": true}'
+
+  - name: checkout_completes_valid_order
+    eval:
+      kind: python_call
+      module: holdout_amazon.playwright_test
+      function: test_checkout_valid_order
+      args: []
+      kwargs: {}
+      expect_return: '{"status": "pass", "has_order_id": true}'
+
+  - name: cart_persists_refresh
+    eval:
+      kind: python_call
+      module: holdout_amazon.playwright_test
+      function: test_cart_persistence
+      args: []
+      kwargs: {}
+      expect_return: '{"status": "pass", "persisted": true}'
+
+  - name: mobile_view_no_horizontal_overflow
+    eval:
+      kind: python_call
+      module: holdout_amazon.playwright_test
+      function: test_mobile_viewport
+      args: []
+      kwargs: {}
+      expect_return: '{"status": "pass", "no_overflow": true}'
+
+  - name: basic_a11y_labels
+    eval:
+      kind: python_call
+      module: holdout_amazon.playwright_test
+      function: test_accessibility_labels
+      args: []
+      kwargs: {}
+      expect_return: '{"status": "pass", "has_a11y": true}'
+
+  - name: no_pii_or_card_logged
+    eval:
+      kind: python_call
+      module: holdout_amazon.playwright_test
+      function: test_no_pii_logged
+      args: []
+      kwargs: {}
+      expect_return: '{"status": "pass", "clean": true}'
