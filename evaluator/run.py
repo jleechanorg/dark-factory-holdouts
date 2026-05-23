@@ -21,6 +21,7 @@ import sys
 import yaml
 
 _CALL_RUNNER = pathlib.Path(__file__).parent / "_call_runner.py"
+_CALL_RUNNER_SOURCE = _CALL_RUNNER.read_text()
 _SUBPROCESS_TIMEOUT_SECONDS = 30
 
 # Buckets surfaced as `detail`. Never include real values, arities, or paths.
@@ -31,6 +32,7 @@ _BUCKET_EXCEPTION = "exception"
 _BUCKET_TIMEOUT = "timeout"
 _BUCKET_MISSING_MODULE = "missing_module"
 _BUCKET_MISSING_FUNCTION = "missing_function"
+_BUCKET_MISSING_ATTRIBUTE = "missing_attribute"
 _BUCKET_UNKNOWN_KIND = "unknown_kind"
 _BUCKET_INVALID_SCHEMA = "invalid_schema"
 
@@ -55,21 +57,50 @@ def _sanitized_env() -> dict:
     return env
 
 
+_CURRENT_FEATURE_DIR = None
+
 def _sandbox_command(impl_root: pathlib.Path) -> list[str] | None:
     sandbox_exec = shutil.which("sandbox-exec")
     if sandbox_exec is None:
         return None
-    holdouts_root = str((pathlib.Path(__file__).parent.parent / "holdouts").resolve())
-    holdouts_root = holdouts_root.replace("\\", "\\\\").replace('"', '\\"')
+    sealed_root = str(pathlib.Path(__file__).parent.parent.resolve())
+    sealed_root = sealed_root.replace("\\", "\\\\").replace('"', '\\"')
     writable_root = str(impl_root.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+    
+    allow_rule = ""
+    global _CURRENT_FEATURE_DIR
+    if _CURRENT_FEATURE_DIR:
+        allowed = str(_CURRENT_FEATURE_DIR.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+        allow_rule = f'(allow file-read* (subpath "{allowed}"))'
+
     profile = f"""
 (version 1)
 (allow default)
-(deny file-read* (subpath "{holdouts_root}"))
-(deny file-write* (subpath "{holdouts_root}"))
+(deny file-read* (subpath "{sealed_root}"))
+{allow_rule}
+(deny file-write* (subpath "{sealed_root}"))
 (deny file-write* (require-not (subpath "{writable_root}")))
 """
     return [sandbox_exec, "-p", profile]
+
+
+def _subprocess_python() -> str:
+    sealed_root = pathlib.Path(__file__).parent.parent.resolve()
+    candidates = [
+        pathlib.Path(getattr(sys, "_base_executable", "")),
+        pathlib.Path(shutil.which("python3") or ""),
+        pathlib.Path(sys.executable),
+    ]
+    for candidate in candidates:
+        if not str(candidate):
+            continue
+        try:
+            candidate.resolve().relative_to(sealed_root)
+        except ValueError:
+            return str(candidate)
+        except OSError:
+            continue
+    return sys.executable
 
 
 def _run_subprocess(spec_payload: dict, impl_root: pathlib.Path) -> dict:
@@ -79,7 +110,7 @@ def _run_subprocess(spec_payload: dict, impl_root: pathlib.Path) -> dict:
         return {"ok": False, "error": _BUCKET_EXCEPTION}
     try:
         proc = subprocess.run(
-            sandbox_prefix + [sys.executable, str(_CALL_RUNNER)],
+            sandbox_prefix + [_subprocess_python(), "-c", _CALL_RUNNER_SOURCE],
             input=json.dumps(spec_payload),
             capture_output=True,
             text=True,
@@ -166,13 +197,39 @@ def _python_call_signature(spec: dict, impl_root: pathlib.Path) -> tuple[bool, s
     return False, _BUCKET_ARITY_MISMATCH
 
 
+def _python_module_attr(spec: dict, impl_root: pathlib.Path) -> tuple[bool, str]:
+    payload = {
+        "kind": "python_module_attr",
+        "module": spec["module"],
+        "attribute": spec["attribute"],
+    }
+    result = _run_subprocess(payload, impl_root)
+    if not result.get("ok"):
+        return False, result.get("error") or _BUCKET_EXCEPTION
+    expected_repr = repr(spec["expect_value"])
+    if result.get("value") == expected_repr:
+        return True, _BUCKET_OK
+    return False, _BUCKET_VALUE_MISMATCH
+
+
 EVALUATORS = {
     "python_call": _python_call,
     "python_call_signature": _python_call_signature,
+    "python_module_attr": _python_module_attr,
 }
 
 
 def evaluate(feature: str, impl_root: pathlib.Path) -> dict:
+    global _CURRENT_FEATURE_DIR
+    _CURRENT_FEATURE_DIR = pathlib.Path(__file__).parent.parent / "holdouts" / feature
+    
+    # Add to PYTHONPATH
+    existing_pp = os.environ.get("PYTHONPATH", "")
+    if existing_pp:
+        os.environ["PYTHONPATH"] = f"{_CURRENT_FEATURE_DIR}:{existing_pp}"
+    else:
+        os.environ["PYTHONPATH"] = str(_CURRENT_FEATURE_DIR)
+
     scenarios_path = pathlib.Path(__file__).parent.parent / "holdouts" / feature / "scenarios.yaml"
     if not scenarios_path.exists():
         # Do not echo the path back to the engine — keep the leak surface narrow.
