@@ -1,0 +1,64 @@
+feature: roman
+# Sealed holdout for the `roman` feature. The implementing agent never reads
+# this file. The conversion cases below mirror the 19 parametrised cases that
+# previously lived at `benchmarks/all-nodes-coverage/_holdout/test_roman.py`
+# in dark-factory; the hidden `__version__` contract is asserted last so a
+# spec-compliant function but missing module metadata still fails the gate.
+scenarios:
+  - name: function_takes_one_argument
+    eval:
+      kind: python_call_signature
+      module: df_demo3.roman
+      function: to_roman
+      expect_arity: 1
+
+  - name: to_roman_1
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [1],    kwargs: {}, expect_return: "I" }
+  - name: to_roman_2
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [2],    kwargs: {}, expect_return: "II" }
+  - name: to_roman_3
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [3],    kwargs: {}, expect_return: "III" }
+  - name: to_roman_4
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [4],    kwargs: {}, expect_return: "IV" }
+  - name: to_roman_5
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [5],    kwargs: {}, expect_return: "V" }
+  - name: to_roman_9
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [9],    kwargs: {}, expect_return: "IX" }
+  - name: to_roman_10
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [10],   kwargs: {}, expect_return: "X" }
+  - name: to_roman_14
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [14],   kwargs: {}, expect_return: "XIV" }
+  - name: to_roman_40
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [40],   kwargs: {}, expect_return: "XL" }
+  - name: to_roman_49
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [49],   kwargs: {}, expect_return: "XLIX" }
+  - name: to_roman_50
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [50],   kwargs: {}, expect_return: "L" }
+  - name: to_roman_90
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [90],   kwargs: {}, expect_return: "XC" }
+  - name: to_roman_94
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [94],   kwargs: {}, expect_return: "XCIV" }
+  - name: to_roman_100
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [100],  kwargs: {}, expect_return: "C" }
+  - name: to_roman_400
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [400],  kwargs: {}, expect_return: "CD" }
+  - name: to_roman_500
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [500],  kwargs: {}, expect_return: "D" }
+  - name: to_roman_900
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [900],  kwargs: {}, expect_return: "CM" }
+  - name: to_roman_1000
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [1000], kwargs: {}, expect_return: "M" }
+  - name: to_roman_1994
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [1994], kwargs: {}, expect_return: "MCMXCIV" }
+  - name: to_roman_3999
+    eval: { kind: python_call, module: df_demo3.roman, function: to_roman, args: [3999], kwargs: {}, expect_return: "MMMCMXCIX" }
+
+  # Hidden contract: module exposes __version__ == "1.0.0".
+  # Existing seal test `test_module_attr_evaluator_does_not_leak_hidden_value`
+  # references this scenario name; do not rename without updating that test.
+  - name: module_metadata_contract
+    eval:
+      kind: python_module_attr
+      module: df_demo3.roman
+      attribute: __version__
+      expect_value: "1.0.0"
