@@ -13,3 +13,12 @@ scenarios:
     # node_modules, entrypoint.sh must remain.
     command: "awk '/AS runner/{f=1} f' Dockerfile | grep -Eq '^[[:space:]]*COPY[[:space:]]+\\.[[:space:]]+\\.[[:space:]]*$' && exit 1 || exit 0"
     expect_exit: 0
+- name: runner_stage_still_provides_entrypoint
+  eval:
+    kind: shell
+    # Removing `COPY . .` must not strand entrypoint.sh: if the runner stage
+    # references entrypoint.sh (chmod / CMD), it MUST also COPY it in, or the
+    # image build fails at `RUN chmod +x entrypoint.sh`. Catches the exact
+    # defect the structural-only holdout missed.
+    command: "R=$(awk '/AS runner/{f=1} f' Dockerfile); printf '%s' \"$R\" | grep -q 'entrypoint.sh' || exit 0; printf '%s' \"$R\" | grep -Eq 'COPY[[:space:]].*entrypoint\\.sh'"
+    expect_exit: 0
