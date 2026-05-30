@@ -1,0 +1,15 @@
+feature: agfapi_dockerignore
+scenarios:
+- name: dockerignore_exists_with_node_modules_and_test
+  eval:
+    kind: shell
+    command: "test -f .dockerignore && grep -qx 'node_modules' .dockerignore && grep -qx 'test' .dockerignore"
+    expect_exit: 0
+- name: runner_stage_has_no_blanket_copy_all
+  eval:
+    kind: shell
+    # Isolate the runner stage (from `AS runner` to EOF) and fail if it still
+    # contains a blanket `COPY . .` line. Explicit COPY of dist/, package*.json,
+    # node_modules, entrypoint.sh must remain.
+    command: "awk '/AS runner/{f=1} f' Dockerfile | grep -Eq '^[[:space:]]*COPY[[:space:]]+\\.[[:space:]]+\\.[[:space:]]*$' && exit 1 || exit 0"
+    expect_exit: 0
