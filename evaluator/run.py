@@ -35,6 +35,8 @@ _BUCKET_MISSING_FUNCTION = "missing_function"
 _BUCKET_MISSING_ATTRIBUTE = "missing_attribute"
 _BUCKET_UNKNOWN_KIND = "unknown_kind"
 _BUCKET_INVALID_SCHEMA = "invalid_schema"
+_BUCKET_COMMAND_FAILED = "command_failed"
+_BUCKET_OUTPUT_MISMATCH = "output_mismatch"
 
 
 def _invalid_schema(feature: str, name: str = "schema") -> dict:
@@ -109,6 +111,10 @@ def _run_subprocess(spec_payload: dict, impl_root: pathlib.Path) -> dict:
     if sandbox_prefix is None:
         return {"ok": False, "error": _BUCKET_EXCEPTION}
     try:
+        tmp_dir = impl_root / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        env = _sanitized_env()
+        env["TMPDIR"] = str(tmp_dir.resolve())
         proc = subprocess.run(
             sandbox_prefix + [_subprocess_python(), "-c", _CALL_RUNNER_SOURCE],
             input=json.dumps(spec_payload),
@@ -116,7 +122,7 @@ def _run_subprocess(spec_payload: dict, impl_root: pathlib.Path) -> dict:
             text=True,
             timeout=_SUBPROCESS_TIMEOUT_SECONDS,
             cwd=str(impl_root),
-            env=_sanitized_env(),
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": _BUCKET_TIMEOUT}
@@ -132,6 +138,35 @@ def _run_subprocess(spec_payload: dict, impl_root: pathlib.Path) -> dict:
         return json.loads(out)
     except Exception:
         return {"ok": False, "error": _BUCKET_EXCEPTION}
+
+
+def _run_shell_subprocess(command: str, impl_root: pathlib.Path) -> dict:
+    """Run a shell command inside the sealed sandbox, cwd=impl_root.
+
+    Reuses the same sandbox profile as the Python call runner so the
+    implementation under test still cannot read the sealed holdouts repo.
+    Returns {"ok": True, "returncode": int, "stdout": str} or a bucket error.
+    """
+    sandbox_prefix = _sandbox_command(impl_root)
+    if sandbox_prefix is None:
+        return {"ok": False, "error": _BUCKET_EXCEPTION}
+    try:
+        env = _sanitized_env()
+        proc = subprocess.run(
+            sandbox_prefix + ["/bin/sh", "-c", command],
+            capture_output=True,
+            text=True,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+            cwd=str(impl_root),
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": _BUCKET_TIMEOUT}
+    except Exception:
+        return {"ok": False, "error": _BUCKET_EXCEPTION}
+    finally:
+        _remove_holdout_handles(impl_root)
+    return {"ok": True, "returncode": proc.returncode, "stdout": proc.stdout or ""}
 
 
 def _remove_holdout_handles(impl_root: pathlib.Path) -> None:
@@ -212,10 +247,42 @@ def _python_module_attr(spec: dict, impl_root: pathlib.Path) -> tuple[bool, str]
     return False, _BUCKET_VALUE_MISMATCH
 
 
+def _shell(spec: dict, impl_root: pathlib.Path) -> tuple[bool, str]:
+    """Run a shell command in the impl root; pass on exit 0 (or expect_exit).
+
+    Spec keys:
+        command (str, required): shell command to run, cwd = impl_root.
+        expect_exit (int, optional, default 0): required exit code.
+        expect_stdout_contains (str, optional): substring required in stdout.
+
+    Only a redacted bucket label leaks to the implementing agent — never the
+    command text, expected exit code, or actual output.
+    """
+    command = spec.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return False, _BUCKET_INVALID_SCHEMA
+    expect_exit = spec.get("expect_exit", 0)
+    if not isinstance(expect_exit, int):
+        return False, _BUCKET_INVALID_SCHEMA
+    result = _run_shell_subprocess(command, impl_root)
+    if not result.get("ok"):
+        return False, result.get("error") or _BUCKET_EXCEPTION
+    if result.get("returncode") != expect_exit:
+        return False, _BUCKET_COMMAND_FAILED
+    expect_contains = spec.get("expect_stdout_contains")
+    if expect_contains is not None:
+        if not isinstance(expect_contains, str):
+            return False, _BUCKET_INVALID_SCHEMA
+        if expect_contains not in result.get("stdout", ""):
+            return False, _BUCKET_OUTPUT_MISMATCH
+    return True, _BUCKET_OK
+
+
 EVALUATORS = {
     "python_call": _python_call,
     "python_call_signature": _python_call_signature,
     "python_module_attr": _python_module_attr,
+    "shell": _shell,
 }
 
 
