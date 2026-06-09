@@ -1,0 +1,44 @@
+feature: level-up-session
+# Sealed holdout for the worldarchitect.ai level-up session state-machine
+# refactor (spec: ~/roadmap/level-up-refactor-spec-2026-06-09.md, design:
+# level-up-session-state-machine-design-2026-06-08.md). The implementing
+# agent never reads this file.
+#
+# Non-tautological design notes:
+#  - Checks import the candidate repo's `mvp_site.level_up_session` reducer
+#    (pure stdlib module) from impl_root and drive REAL state transitions —
+#    a candidate cannot pass by editing tests or by string-matching.
+#  - Scenario 2 ("rejected mixed contract") is grounded at the reducer
+#    level: the executable analog of "a rejected god-mode commit must leave
+#    the session untouched and emit no phantom legacy flags" is the
+#    level-guard ValueError in apply_god_mode_admin_commit. The world_logic
+#    mixed-contract rejection cannot be evaluated here without the full
+#    Flask/Firestore dependency tree, which the sealed sandbox forbids.
+#  - Scenario 3 asserts the projector emits NO level_up_signal and no
+#    truthy level_up_pending once a god-mode admin commit completes the
+#    session — the "stale signal overrides my god-mode level" bug class.
+scenarios:
+  - name: lvl-finish-commit-clears-session
+    eval:
+      kind: python_call
+      module: holdout_levelup.checks
+      function: check_finish_commit_clears_session
+      args: []
+      kwargs: {}
+      expect_return: "PASS"
+  - name: lvl-rejected-mixed-contract
+    eval:
+      kind: python_call
+      module: holdout_levelup.checks
+      function: check_rejected_godmode_commit_session_unchanged
+      args: []
+      kwargs: {}
+      expect_return: "PASS"
+  - name: lvl-stale-signal-cleared-after-admin
+    eval:
+      kind: python_call
+      module: holdout_levelup.checks
+      function: check_stale_signal_cleared_after_admin
+      args: []
+      kwargs: {}
+      expect_return: "PASS"
