@@ -92,6 +92,26 @@ scenarios:
         | grep -q .
       expect_exit: 0
 
+  # --- Single writer: the world_logic second writer is deleted (cold-review) ----
+  - name: world_logic._build_level_up_session_update (the source=server second writer) is deleted
+    eval:
+      kind: shell
+      command: >
+        ! grep -rn "_build_level_up_session_update" mvp_site --include=*.py
+        | grep -vE "/tests?/|test_|_test"
+        | grep -q .
+      expect_exit: 0
+
+  - name: no production code stamps a level_up_session source of "server"
+    eval:
+      kind: shell
+      command: >
+        ! grep -rnE "source.{0,12}[:=].{0,4}[\"']server[\"']" mvp_site --include=*.py
+        | grep -iE "level_up|session"
+        | grep -vE "/tests?/|test_|_test"
+        | grep -q .
+      expect_exit: 0
+
   # --- Behavioral: the regression suite for the v2 contract passes ---------------
   - name: organic and god-mode level-up regression suite passes (real, no mock-mode)
     eval:
