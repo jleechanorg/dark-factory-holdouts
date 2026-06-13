@@ -1,44 +1,115 @@
-feature: level-up-session
-# Sealed holdout for the worldarchitect.ai level-up session state-machine
-# refactor (spec: ~/roadmap/level-up-refactor-spec-2026-06-09.md, design:
-# level-up-session-state-machine-design-2026-06-08.md). The implementing
-# agent never reads this file.
+# Sealed behavioral holdouts for the level-up "immediate-commit + session-as-record"
+# redesign. The implementing agent MUST NOT read this file (sealed via sandbox deny).
+# Each scenario encodes a v2 contract invariant as a check run against impl_root
+# (the worldarchitect.ai repo). Scenarios fail on origin/main today and define the
+# target end-state the implementation must reach.
 #
-# Non-tautological design notes:
-#  - Checks import the candidate repo's `mvp_site.level_up_session` reducer
-#    (pure stdlib module) from impl_root and drive REAL state transitions —
-#    a candidate cannot pass by editing tests or by string-matching.
-#  - Scenario 2 ("rejected mixed contract") is grounded at the reducer
-#    level: the executable analog of "a rejected god-mode commit must leave
-#    the session untouched and emit no phantom legacy flags" is the
-#    level-guard ValueError in apply_god_mode_admin_commit. The world_logic
-#    mixed-contract rejection cannot be evaluated here without the full
-#    Flask/Firestore dependency tree, which the sealed sandbox forbids.
-#  - Scenario 3 asserts the projector emits NO level_up_signal and no
-#    truthy level_up_pending once a god-mode admin commit completes the
-#    session — the "stale signal overrides my god-mode level" bug class.
+# Design under test: roadmap/level-up-session-northstar-2026-06-11.md (v2).
+# Only PASS/WARN/FAIL + scenario name flow back to the implementer.
+
+feature: level-up-session
 scenarios:
-  - name: lvl-finish-commit-clears-session
+  # --- Consolidation: no pending state machine survives in production ------------
+  - name: pending finish-commit reducer functions are not called in production
     eval:
-      kind: python_call
-      module: holdout_levelup.checks
-      function: check_finish_commit_clears_session
-      args: []
-      kwargs: {}
-      expect_return: "PASS"
-  - name: lvl-rejected-mixed-contract
+      kind: shell
+      # The 6 pending-lifecycle functions must be deleted/unwired. Allow defs in
+      # level_up_session.py and any test; fail if a production module calls them.
+      command: >
+        ! grep -rnE "begin_finish_commit|complete_finish_commit|mark_finish_error"
+        mvp_site --include=*.py
+        | grep -vE "level_up_session.py|/tests?/|test_|_test"
+        | grep -q .
+      expect_exit: 0
+
+  - name: STATUS_COMMITTING is not used to gate any production write path
     eval:
-      kind: python_call
-      module: holdout_levelup.checks
-      function: check_rejected_godmode_commit_session_unchanged
-      args: []
-      kwargs: {}
-      expect_return: "PASS"
-  - name: lvl-stale-signal-cleared-after-admin
+      kind: shell
+      command: >
+        ! grep -rn "STATUS_COMMITTING" mvp_site --include=*.py
+        | grep -vE "level_up_session.py|/tests?/|test_|_test"
+        | grep -q .
+      expect_exit: 0
+
+  # --- Divergence elimination: rewards_box carries no independent level ----------
+  - name: rewards_box.new_level is never written as an independent lifecycle authority
     eval:
-      kind: python_call
-      module: holdout_levelup.checks
-      function: check_stale_signal_cleared_after_admin
-      args: []
-      kwargs: {}
-      expect_return: "PASS"
+      kind: shell
+      # No production assignment to rewards_box[...]=new_level / .new_level= outside
+      # the one-way projector (project_legacy_level_up_fields).
+      command: >
+        ! grep -rnE "rewards_box\b.*\bnew_level\b\s*[:=]" mvp_site --include=*.py
+        | grep -vE "level_up_session.py|project_legacy_level_up_fields|/tests?/|test_|_test"
+        | grep -q .
+      expect_exit: 0
+
+  - name: a positive-form grep gate forbids direct legacy level-up field writes
+    eval:
+      kind: shell
+      # field_ownership_registry must be enforced by a CI/script gate, not inert.
+      command: >
+        grep -rqlE "rewards_box.*(level_up_available|new_level)|custom_campaign_state.*level_up_"
+        .github scripts 2>/dev/null
+        && grep -rqil "field_ownership_registry" .github scripts mvp_site 2>/dev/null
+      expect_exit: 0
+
+  # --- Routing: single field, not the 13-flag OR --------------------------------
+  - name: level-up routing consults level_up_session, not a 13-flag OR
+    eval:
+      kind: shell
+      # agents.py routing must reference level_up_session and must NOT OR together
+      # the legacy modal flags + rewards_pending as the primary decision.
+      command: >
+        grep -q "level_up_session" mvp_site/agents.py
+        && ! grep -nE "rewards_pending.*level_up_available" mvp_site/agents.py | grep -q .
+      expect_exit: 0
+
+  # --- ZFC: availability is model-granted, never XP-threshold computed -----------
+  - name: level-up availability is not derived from level_from_xp thresholds
+    eval:
+      kind: shell
+      command: >
+        ! grep -rnE "level_up.*level_from_xp|level_from_xp.*>.*level\b" mvp_site --include=*.py
+        | grep -vE "/tests?/|test_|_test|# *allow"
+        | grep -q .
+      expect_exit: 0
+
+  # --- Server-side synthesis is deleted ------------------------------------------
+  - name: server-generated planning-choice synthesis is removed
+    eval:
+      kind: shell
+      command: >
+        ! grep -rn "server_generated\s*=\s*True" mvp_site/world_logic.py | grep -q .
+      expect_exit: 0
+
+  # --- XP single-homed -----------------------------------------------------------
+  - name: XP is single-homed in experience.current (no xp_current / xp scalar writes)
+    eval:
+      kind: shell
+      command: >
+        ! grep -rnE "\b(xp_current|xp_total)\b\s*[:=]" mvp_site --include=*.py
+        | grep -vE "experience|/tests?/|test_|_test|migration"
+        | grep -q .
+      expect_exit: 0
+
+  # --- Behavioral: the regression suite for the v2 contract passes ---------------
+  - name: organic and god-mode level-up regression suite passes (real, no mock-mode)
+    eval:
+      kind: shell
+      # The implementation must provide a runnable regression that proves:
+      # organic 2->3->4 commits immediately, god-mode set-level does not revert,
+      # finish never fails open, and no stale lifecycle flags survive a transition.
+      command: >
+        test -f mvp_site/tests/test_level_up_immediate_commit.py
+        && TESTING_AUTH_BYPASS=true ./run_tests.sh mvp_site/tests/test_level_up_immediate_commit.py
+      expect_exit: 0
+
+  - name: atomic co-write — sheet and session are written by one reducer entrypoint
+    eval:
+      kind: shell
+      # The commit path must funnel through a single reducer that writes both
+      # player_character_data and level_up_session; no separate level writer.
+      command: >
+        test -f mvp_site/tests/test_level_up_atomic_cowrite.py
+        && TESTING_AUTH_BYPASS=true ./run_tests.sh mvp_site/tests/test_level_up_atomic_cowrite.py
+      expect_exit: 0
