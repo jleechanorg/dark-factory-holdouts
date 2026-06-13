@@ -74,12 +74,22 @@ scenarios:
         | grep -q .
       expect_exit: 0
 
-  # --- Server-side synthesis is deleted ------------------------------------------
-  - name: server-generated planning-choice synthesis is removed
+  # --- Server-side synthesis is deleted (BOTH files: world_logic + rewards_engine) ---
+  - name: no server_generated planning-choice synthesis in world_logic or rewards_engine
     eval:
       kind: shell
       command: >
-        ! grep -rn "server_generated\s*=\s*True" mvp_site/world_logic.py | grep -q .
+        ! grep -rnE "server_generated\s*=\s*True" mvp_site/world_logic.py mvp_site/rewards_engine.py
+        | grep -q .
+      expect_exit: 0
+
+  - name: rewards_engine does not server-synthesize a "Begin Level-Up" planning choice
+    eval:
+      kind: shell
+      command: >
+        ! grep -rnE "default_level_up_choices|Begin Level-Up to Level" mvp_site/rewards_engine.py
+        | grep -vE "/tests?/|test_|_test"
+        | grep -q .
       expect_exit: 0
 
   # --- XP single-homed -----------------------------------------------------------
@@ -132,4 +142,14 @@ scenarios:
       command: >
         test -f mvp_site/tests/test_level_up_atomic_cowrite.py
         && TESTING_AUTH_BYPASS=true ./run_tests.sh mvp_site/tests/test_level_up_atomic_cowrite.py
+      expect_exit: 0
+
+  - name: partial-sheet level-up MERGES into PCD (does not wipe HP/XP/inventory)
+    eval:
+      kind: shell
+      # A level-up whose sheet delta omits unrelated fields must preserve them
+      # (the god_mode_level_up.py:171-186 merge bug must not recur organically).
+      command: >
+        test -f mvp_site/tests/test_level_up_partial_sheet_merge.py
+        && TESTING_AUTH_BYPASS=true ./run_tests.sh mvp_site/tests/test_level_up_partial_sheet_merge.py
       expect_exit: 0
