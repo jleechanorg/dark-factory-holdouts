@@ -59,9 +59,15 @@ scenarios:
       kind: shell
       # agents.py routing must reference level_up_session and must NOT OR together
       # the legacy modal flags + rewards_pending as the primary decision.
+      # ALSO: rewards_engine.py is_level_up_active / is_level_up_route_active (the real OR
+      # routing authority per the v2 execution spec) must delegate to level_up_session,
+      # not re-derive from legacy pending signals.
       command: >
         grep -q "level_up_session" mvp_site/agents.py
         && ! grep -nE "rewards_pending.*level_up_available" mvp_site/agents.py | grep -q .
+        && grep -qE "def is_level_up_active|def is_level_up_route_active" mvp_site/rewards_engine.py
+        && grep -A 5 "def is_level_up_active" mvp_site/rewards_engine.py | grep -q "is_review_open"
+        && grep -A 5 "def is_level_up_route_active" mvp_site/rewards_engine.py | grep -q "is_review_open"
       expect_exit: 0
 
   # --- ZFC: availability is model-granted, never XP-threshold computed -----------
@@ -79,7 +85,7 @@ scenarios:
     eval:
       kind: shell
       command: >
-        ! grep -rnE "server_generated\s*=\s*True" mvp_site/world_logic.py mvp_site/rewards_engine.py
+        ! grep -rnE "server_generated\s*[=:]\s*True|\"server_generated\"\s*:\s*True" mvp_site/world_logic.py mvp_site/rewards_engine.py
         | grep -q .
       expect_exit: 0
 
