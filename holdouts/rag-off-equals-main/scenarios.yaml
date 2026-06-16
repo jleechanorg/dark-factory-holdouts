@@ -1,0 +1,62 @@
+# Sealed holdout: prove RAG "original" mode (RAG off, the default) serves the
+# SAME system instruction as the pre-seam origin/main baseline.
+#
+# PURPOSE — anti-fake gate. The implementing agent must NOT be able to claim
+# "rag-off == main proven" using unit tests / structural reasoning alone. The
+# binding proof is a REAL-SERVICES cross-branch capture: original-mode served
+# system instruction on the feature branch must be byte-identical (sha256) to
+# the served instruction on origin/main, reconstructed from the server's OWN
+# streaming log (non-circular), with real Gemini + real Firestore and no mocks.
+#
+# Grading is structural only (30s sandbox, BSD grep, no live LLM in-scenario):
+#   S1-S2 verify the inert-by-design contract already holds in code (PASS today).
+#   S3-S6 require the real-services cross-branch proof to EXIST and be real +
+#         non-circular + cross-branch (FAIL until the agent ships it).
+# A unit test under mvp_site/tests/ can satisfy NONE of S3-S6 — the proof must
+# live in testing_mcp/ and carry real-services + server-log-reconstruction markers.
+feature: rag-off-equals-main
+
+scenarios:
+  # --- Contract: original mode is inert (serves the full unmodified prompt) ---
+  - name: original_mode_predicates_are_inert
+    eval:
+      kind: shell
+      command: |
+        python3 -c "import sys; sys.path.insert(0,'mvp_site'); import rag_mode as r; sys.exit(0 if (r.serves_rag_prompt('original') is False and r.builds_rag_prompt('original') is False and r.runs_shadow_call('original') is False and r.get_rag_mode({})=='original' and r.get_rag_mode({'rag_mode':'__invalid__'})=='original') else 1)"
+      expect_exit: 0
+
+  - name: original_mode_load_short_circuits_to_full_file
+    eval:
+      kind: shell
+      command: |
+        grep -A1 "if rag_query is None:" mvp_site/agent_prompts.py | grep -q "return content"
+      expect_exit: 0
+
+  # --- Anti-fake: a REAL-SERVICES cross-branch proof must exist in testing_mcp ---
+  - name: real_services_cross_branch_proof_file_exists
+    eval:
+      kind: shell
+      command: |
+        test -f testing_mcp/test_rag_off_equals_main_e2e.py
+      expect_exit: 0
+
+  - name: proof_captures_origin_main_and_asserts_sha_equality
+    eval:
+      kind: shell
+      command: |
+        F=testing_mcp/test_rag_off_equals_main_e2e.py; test -f "$F" && grep -q "origin/main" "$F" && grep -qi "sha256" "$F" && grep -q "assert" "$F"
+      expect_exit: 0
+
+  - name: proof_uses_real_services_no_mocks
+    eval:
+      kind: shell
+      command: |
+        F=testing_mcp/test_rag_off_equals_main_e2e.py; test -f "$F" && grep -q "CAPTURE_RAW_LLM" "$F" && grep -q "MCPTestBase" "$F" && grep -qE "MOCK_SERVICES_MODE.*false" "$F" && grep -qE "USE_MOCK_GEMINI.*false" "$F"
+      expect_exit: 0
+
+  - name: proof_is_non_circular_server_log_reconstruction
+    eval:
+      kind: shell
+      command: |
+        F=testing_mcp/test_rag_off_equals_main_e2e.py; test -f "$F" && grep -q "STREAMING_LLM_SYSTEM_PROMPT" "$F"
+      expect_exit: 0
